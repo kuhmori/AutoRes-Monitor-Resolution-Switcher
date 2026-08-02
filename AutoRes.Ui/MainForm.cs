@@ -28,6 +28,7 @@ namespace AutoRes.Ui
             {
                 _settings = AppSettings.Load();
                 chkAutostart.Checked = _settings.Autostart;
+                chkStartMinimized.Checked = _settings.StartMinimized;
                 ApplyDarkMode(_settings.DarkMode);
                 if (_settings.NormalResolution != null)
                 {
@@ -36,6 +37,14 @@ namespace AutoRes.Ui
                 RefreshGameProfiles();
                 RefreshProcesses();
                 lblStatus.Text = $"Monitoring {_settings.GameProfiles.Count} game(s)";
+
+                // If StartMinimized is checked, minimize the window to tray
+                if (_settings.StartMinimized)
+                {
+                    this.Hide();
+                    this.WindowState = FormWindowState.Minimized;
+                }
+
                 _processTimer.Start();
             }
             catch (Exception ex)
@@ -284,6 +293,12 @@ namespace AutoRes.Ui
                 MessageBox.Show("Failed to set autostart: " + ex.Message);
                 chkAutostart.Checked = !chkAutostart.Checked;
             }
+            _settings.Save();
+        }
+
+        private void chkStartMinimized_CheckedChanged(object sender, EventArgs e)
+        {
+            _settings.StartMinimized = chkStartMinimized.Checked;
             _settings.Save();
         }
 

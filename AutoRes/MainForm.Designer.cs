@@ -22,6 +22,7 @@ namespace AutoRes
             this.btnSaveGame = new System.Windows.Forms.Button();
             this.btnToggleDark = new System.Windows.Forms.Button();
             this.chkAutostart = new System.Windows.Forms.CheckBox();
+            this.chkStartMinimized = new System.Windows.Forms.CheckBox();
             this.lblNormal = new System.Windows.Forms.Label();
             this.lblGameProfiles = new System.Windows.Forms.Label();
             this.lblStatus = new System.Windows.Forms.Label();
@@ -87,6 +88,16 @@ namespace AutoRes
             this.chkAutostart.Text = "Autostart with Windows";
             this.chkAutostart.UseVisualStyleBackColor = true;
             this.chkAutostart.CheckedChanged += new System.EventHandler(this.chkAutostart_CheckedChanged);
+
+            // chkStartMinimized
+            this.chkStartMinimized.AutoSize = true;
+            this.chkStartMinimized.Location = new System.Drawing.Point(180, 90);
+            this.chkStartMinimized.Name = "chkStartMinimized";
+            this.chkStartMinimized.Size = new System.Drawing.Size(100, 17);
+            this.chkStartMinimized.TabIndex = 6;
+            this.chkStartMinimized.Text = "Start Minimized";
+            this.chkStartMinimized.UseVisualStyleBackColor = true;
+            this.chkStartMinimized.CheckedChanged += new System.EventHandler(this.chkStartMinimized_CheckedChanged);
 
             // lblWidth
             this.lblWidth.AutoSize = true;
@@ -170,6 +181,7 @@ namespace AutoRes
             this.Controls.Add(this.lblGameProfiles);
             this.Controls.Add(this.lblStatus);
             this.Controls.Add(this.lblNormal);
+            this.Controls.Add(this.chkStartMinimized);
             this.Controls.Add(this.chkAutostart);
             this.Controls.Add(this.btnToggleDark);
             this.Controls.Add(this.btnSaveGame);
@@ -197,6 +209,7 @@ namespace AutoRes
         private System.Windows.Forms.Button btnSaveGame;
         private System.Windows.Forms.Button btnToggleDark;
         private System.Windows.Forms.CheckBox chkAutostart;
+        private System.Windows.Forms.CheckBox chkStartMinimized;
         private System.Windows.Forms.Label lblNormal;
         private System.Windows.Forms.Label lblGameProfiles;
         private System.Windows.Forms.Label lblStatus;

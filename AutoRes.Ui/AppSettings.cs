@@ -41,6 +41,7 @@ namespace AutoRes.Ui
         public List<GameProfile> GameProfiles { get; set; }
         public bool Autostart { get; set; }
         public bool DarkMode { get; set; }
+        public bool StartMinimized { get; set; }
 
         public AppSettings()
         {
