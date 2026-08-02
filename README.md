@@ -1,9 +1,8 @@
-[README.md](https://github.com/user-attachments/files/30620927/README.md)
 # AutoRes - Monitor Resolution Switcher
 
 > Automatically change your monitor resolution based on which application is running.
 
-
+![AutoRes Interface](docs/autores-preview.png)
 
 ## Features
 
@@ -28,10 +27,15 @@
 - Runs in system tray (minimize to tray)
 - Restore by clicking tray icon
 
+🔇 **Start Minimized**
+- Option to start the app minimized to system tray
+- No window pops up on startup
+- App still monitors games in the background
+
 💾 **Persistent Settings**
 - All settings automatically saved to `%APPDATA%\AutoRes\settings.xml`
 - Profiles, normal resolution, preferences all preserved
-- No configuration file needed—everything works out of the box
+- No manual configuration needed—everything works out of the box
 
 ## Installation
 
