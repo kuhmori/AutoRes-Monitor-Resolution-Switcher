@@ -2,7 +2,7 @@
 
 > Automatically change your monitor resolution based on which application is running.
 
-![AutoRes Interface](docs/autores-preview.png)
+![AutoRes Interface](autores-preview.png)
 
 ## Features
 
