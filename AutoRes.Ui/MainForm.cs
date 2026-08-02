@@ -38,11 +38,12 @@ namespace AutoRes.Ui
                 RefreshProcesses();
                 lblStatus.Text = $"Monitoring {_settings.GameProfiles.Count} game(s)";
 
-                // If StartMinimized is checked, minimize the window to tray
+                // If StartMinimized is checked, hide and minimize to tray
                 if (_settings.StartMinimized)
                 {
-                    this.Hide();
                     this.WindowState = FormWindowState.Minimized;
+                    this.Hide();
+                    this.ShowInTaskbar = false;
                 }
 
                 _processTimer.Start();
