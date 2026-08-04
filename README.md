@@ -213,6 +213,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-**Made with ❤️ for gamers and resolution switchers everywhere**
+**Created with the help of Claude**
 
 Need help? Check the [Issues](https://github.com/kuhmori/AutoRes/issues) page or create a new issue!
