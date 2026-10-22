@@ -1,6 +1,9 @@
 using System;
-using System.Runtime.InteropServices;
+using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 
 namespace AutoRes
 {
@@ -9,8 +12,6 @@ namespace AutoRes
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
         private struct DEVMODE
         {
-            private const int CCHDEVICENAME = 32;
-            private const int CCHFORMNAME = 32;
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
             public string dmDeviceName;
             public short dmSpecVersion;
@@ -47,51 +48,79 @@ namespace AutoRes
 
         private const int ENUM_CURRENT_SETTINGS = -1;
         private const int CDS_UPDATEREGISTRY = 0x00000001;
-        private const int CDS_TEST = 0x00000002;
         private const int DISP_CHANGE_SUCCESSFUL = 0;
+        private const int DM_PELSWIDTH = 0x00080000;
+        private const int DM_PELSHEIGHT = 0x00100000;
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", CharSet = CharSet.Ansi)]
         private static extern int EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
 
-        [DllImport("user32.dll")] 
+        [DllImport("user32.dll", CharSet = CharSet.Ansi)]
         private static extern int ChangeDisplaySettings(ref DEVMODE devMode, int flags);
+
+        private static DEVMODE NewDevMode()
+        {
+            return new DEVMODE { dmSize = (short)Marshal.SizeOf(typeof(DEVMODE)) };
+        }
 
         public static Size GetCurrentResolution()
         {
-            DEVMODE dm = new DEVMODE();
-            dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
-            if (0 != EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref dm))
-            {
-                return new Size(dm.dmPelsWidth, dm.dmPelsHeight);
-            }
-            return new Size(800, 600);
+            var dm = NewDevMode();
+            return EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref dm) != 0
+                ? new Size(dm.dmPelsWidth, dm.dmPelsHeight)
+                : Size.Empty;
         }
 
-        public static bool SetResolution(int width, int height)
+        /// <summary>All resolutions the primary display supports, largest first.</summary>
+        public static List<Size> GetSupportedResolutions()
         {
-            DEVMODE dm = new DEVMODE();
-            dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
-
-            // Get current display settings
-            if (0 != EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref dm))
+            var modes = new HashSet<Size>();
+            var dm = NewDevMode();
+            for (int i = 0; EnumDisplaySettings(null, i, ref dm) != 0; i++)
             {
-                // Modify the resolution
-                dm.dmPelsWidth = width;
-                dm.dmPelsHeight = height;
-                dm.dmFields = 0x00080000 | 0x00040000; // DM_PELSWIDTH | DM_PELSHEIGHT
-
-                // Try to change display settings with CDS_UPDATEREGISTRY flag
-                int result = ChangeDisplaySettings(ref dm, CDS_UPDATEREGISTRY);
-
-                // If UPDATEREGISTRY fails, try without the flag
-                if (result != DISP_CHANGE_SUCCESSFUL)
-                {
-                    result = ChangeDisplaySettings(ref dm, 0);
-                }
-
-                return result == DISP_CHANGE_SUCCESSFUL;
+                if (dm.dmPelsWidth >= 640 && dm.dmPelsHeight >= 480)
+                    modes.Add(new Size(dm.dmPelsWidth, dm.dmPelsHeight));
             }
-            return false;
+            return modes.OrderByDescending(s => s.Width).ThenByDescending(s => s.Height).ToList();
+        }
+
+        /// <summary>
+        /// Changes the primary display resolution. With <paramref name="persist"/> = false the change is
+        /// temporary (not written to the registry), so a crash or reboot won't leave you stuck on it.
+        /// </summary>
+        public static bool SetResolution(int width, int height, bool persist)
+        {
+            var dm = NewDevMode();
+            if (EnumDisplaySettings(null, ENUM_CURRENT_SETTINGS, ref dm) == 0) return false;
+
+            dm.dmPelsWidth = width;
+            dm.dmPelsHeight = height;
+            dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT;
+
+            int result = ChangeDisplaySettings(ref dm, persist ? CDS_UPDATEREGISTRY : 0);
+            if (result != DISP_CHANGE_SUCCESSFUL && persist)
+                result = ChangeDisplaySettings(ref dm, 0);
+
+            return result == DISP_CHANGE_SUCCESSFUL;
+        }
+
+        public static string Format(int width, int height) => $"{width} × {height}";
+        public static string Format(Size size) => Format(size.Width, size.Height);
+
+        private static readonly Regex ResolutionPattern = new Regex(@"(\d{3,5})\s*[^\d]+\s*(\d{3,5})", RegexOptions.Compiled);
+
+        /// <summary>Accepts "1920x1080", "1920 × 1080", "1920*1080", "1920 1080" …</summary>
+        public static bool TryParse(string text, out Size size)
+        {
+            size = Size.Empty;
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            var match = ResolutionPattern.Match(text);
+            if (!match.Success) return false;
+            int w = int.Parse(match.Groups[1].Value);
+            int h = int.Parse(match.Groups[2].Value);
+            if (w < 320 || h < 200) return false;
+            size = new Size(w, h);
+            return true;
         }
     }
 }

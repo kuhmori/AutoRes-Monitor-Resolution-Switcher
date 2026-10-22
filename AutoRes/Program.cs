@@ -1,25 +1,32 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading.Tasks;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace AutoRes
 {
     internal static class Program
     {
-        public static string IconPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "icons8-monitor-32.ico");
+        private const string MutexName = "AutoRes_SingleInstance_193B2E66";
 
-        /// <summary>
-        /// The main entry point for the application.
-        /// </summary>
         [STAThread]
-        static void Main()
+        private static void Main()
         {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
+            bool isFirstInstance;
+            using (var mutex = new Mutex(true, MutexName, out isFirstInstance))
+            {
+                if (!isFirstInstance)
+                {
+                    // AutoRes is already running (e.g. started with Windows) - bring that window up instead.
+                    NativeMethods.BroadcastShowMessage();
+                    return;
+                }
+
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new MainForm());
+
+                GC.KeepAlive(mutex);
+            }
         }
     }
 }

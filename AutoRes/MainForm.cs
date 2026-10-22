@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -7,418 +8,704 @@ using System.Windows.Forms;
 
 namespace AutoRes
 {
-    public partial class MainForm : Form
+    public sealed class MainForm : Form
     {
-        private Timer _processTimer;
-        private bool _isGameActive = false;
-        private AppSettings _settings;
+        private const int PollIntervalMs = 1500;
+
+        // Processes that are never games - hidden from the program picker.
+        private static readonly HashSet<string> IgnoredProcesses = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "svchost", "explorer", "dwm", "lsass", "services", "winlogon", "csrss", "wininit", "conhost",
+            "taskhostw", "SearchIndexer", "SearchHost", "SearchProtocolHost", "SearchFilterHost", "System",
+            "Registry", "smss", "Idle", "fontdrvhost", "sihost", "ctfmon", "RuntimeBroker", "dllhost",
+            "SettingSyncHost", "WmiPrvSE", "spoolsv", "audiodg", "TiWorker", "TrustedInstaller", "MsMpEng",
+            "NisSrv", "SecurityHealthService", "SecurityHealthSystray", "StartMenuExperienceHost",
+            "ShellExperienceHost", "TextInputHost", "ApplicationFrameHost", "SystemSettings", "LockApp",
+            "smartscreen", "backgroundTaskHost", "WUDFHost", "Memory Compression", "AutoRes",
+            "chrome", "msedge", "firefox", "iexplore", "msedgewebview2"
+        };
+
+        private readonly AppSettings _settings;
+        private readonly float _scale;
+        private Theme _theme = Theme.Light;
+
+        private readonly Timer _pollTimer;
+        private readonly Timer _flashTimer;
+        private NotifyIcon _tray;
+        private ContextMenuStrip _trayMenu;
+        private ToolStripMenuItem _trayStatusItem;
+
+        private bool _allowVisible;
+        private bool _exiting;
+        private bool _loadingValues;
+
+        // Game state
+        private GameProfile _activeProfile;
+        private Size _activeResolution;
+        private Size _resolutionBeforeGame;
+        private string _failedKey;
+        private StatusKind _stateKind = StatusKind.Idle;
+        private string _stateText = "";
+
+        // UI
+        private Label _title;
+        private StatusPill _status;
+        private Card _desktopCard, _gameCard, _profilesCard, _settingsCard;
+        private ThemedComboBox _cbNormal, _cbProcess, _cbGameRes;
+        private FlatButton _btnUseCurrent, _btnSaveNormal, _btnRefresh, _btnBrowse, _btnSaveProfile, _btnRemove;
+        private Label _lblProgram, _lblResolution;
+        private ProfileList _profileList;
+        private ToggleSwitch _tgAutostart, _tgStartMinimized, _tgCloseToTray, _tgDarkMode;
+        private ToolTip _toolTip;
 
         public MainForm()
         {
-            InitializeComponent();
-            this.Icon = File.Exists(Program.IconPath) ? new Icon(Program.IconPath) : SystemIcons.Application;
-            this.notifyIcon.Icon = this.Icon;
-            _processTimer = new Timer { Interval = 1000 };
-            _processTimer.Tick += ProcessTimer_Tick;
+            _settings = AppSettings.Load();
+            _allowVisible = !_settings.StartMinimized;
+
+            using (var g = Graphics.FromHwnd(IntPtr.Zero))
+                _scale = g.DpiX / 96f;
+
+            AutoScaleMode = AutoScaleMode.None;
+            Font = new Font("Segoe UI", 9.75f);
+            Text = "AutoRes";
+            Icon = LoadAppIcon(new Size(32, 32));
+            FormBorderStyle = FormBorderStyle.FixedSingle;
+            MaximizeBox = false;
+            StartPosition = FormStartPosition.CenterScreen;
+            ClientSize = new Size(S(480), S(640));
+
+            BuildUi();
+            BuildTray();
+            LoadValues();
+            ApplyTheme();
+
+            if (_settings.Autostart)
+            {
+                // Keep the registry entry pointing at this exe, in case it was moved.
+                try { AutostartHelper.SetAutostart(true); } catch { /* not critical */ }
+            }
+
+            _flashTimer = new Timer { Interval = 3500 };
+            _flashTimer.Tick += (s, e) => { _flashTimer.Stop(); RenderStatus(); };
+
+            _pollTimer = new Timer { Interval = PollIntervalMs };
+            _pollTimer.Tick += (s, e) => CheckGames();
+            _pollTimer.Start();
+            CheckGames();
         }
 
-        private void MainForm_Load(object sender, EventArgs e)
+        #region Layout
+
+        private int S(int value) => (int)Math.Round(value * _scale);
+        private Rectangle R(int x, int y, int w, int h) => new Rectangle(S(x), S(y), S(w), S(h));
+
+        private void BuildUi()
+        {
+            SuspendLayout();
+            _toolTip = new ToolTip();
+
+            _title = new Label
+            {
+                Text = "AutoRes",
+                AutoSize = true,
+                Font = new Font("Segoe UI Semibold", 15f),
+                Location = new Point(S(18), S(14)),
+            };
+
+            _status = new StatusPill { Bounds = R(150, 20, 310, 30), Font = new Font("Segoe UI", 9f) };
+
+            // --- Desktop resolution -------------------------------------------------------------
+            _desktopCard = new Card { Title = "Desktop resolution", Bounds = R(20, 64, 440, 86) };
+            _cbNormal = new ThemedComboBox { CueText = "e.g. 1920 × 1080" };
+            Place(_cbNormal, 16, 42, 200);
+            _btnUseCurrent = new FlatButton { Text = "Use current", Bounds = R(224, 42, 96, 30) };
+            _btnSaveNormal = new FlatButton { Text = "Save", Kind = ButtonKind.Primary, Bounds = R(328, 42, 96, 30) };
+            _desktopCard.Controls.AddRange(new Control[] { _cbNormal, _btnUseCurrent, _btnSaveNormal });
+            _toolTip.SetToolTip(_btnUseCurrent, "Fill in the resolution you're using right now");
+            _toolTip.SetToolTip(_desktopCard, "AutoRes switches back to this resolution when a game closes");
+
+            // --- Add / update a game ------------------------------------------------------------
+            _gameCard = new Card { Title = "Add or update a game", Bounds = R(20, 162, 440, 124) };
+            _lblProgram = MakeFieldLabel("Program", 42);
+            _cbProcess = new ThemedComboBox { CueText = "Process name, e.g. overwatch" };
+            Place(_cbProcess, 92, 42, 210);
+            _btnRefresh = new FlatButton { Text = "↻", Font = new Font("Segoe UI Symbol", 11f), Bounds = R(308, 42, 34, 30) };
+            _btnBrowse = new FlatButton { Text = "Browse…", Bounds = R(348, 42, 76, 30) };
+            _lblResolution = MakeFieldLabel("Resolution", 80);
+            _cbGameRes = new ThemedComboBox { CueText = "e.g. 1728 × 1080" };
+            Place(_cbGameRes, 92, 80, 210);
+            _btnSaveProfile = new FlatButton { Text = "Save game", Kind = ButtonKind.Primary, Bounds = R(308, 80, 116, 30) };
+            _gameCard.Controls.AddRange(new Control[]
+                { _lblProgram, _cbProcess, _btnRefresh, _btnBrowse, _lblResolution, _cbGameRes, _btnSaveProfile });
+            _toolTip.SetToolTip(_btnRefresh, "Reload the list of running programs");
+            _toolTip.SetToolTip(_btnBrowse, "Pick the game's .exe file");
+
+            // --- Profiles -----------------------------------------------------------------------
+            _profilesCard = new Card { Title = "Game profiles", Bounds = R(20, 298, 440, 214) };
+            _btnRemove = new FlatButton { Text = "Remove", Kind = ButtonKind.Danger, Bounds = R(334, 8, 90, 28), Enabled = false };
+            _profileList = new ProfileList
+            {
+                Bounds = R(16, 46, 408, 152),
+                ItemHeight = S(38),
+                EmptyText = "No games yet — add one above.",
+            };
+            _profilesCard.FramedControl = _profileList;
+            _profilesCard.Controls.AddRange(new Control[] { _btnRemove, _profileList });
+
+            // --- Settings -----------------------------------------------------------------------
+            _settingsCard = new Card { Title = "Settings", Bounds = R(20, 524, 440, 100) };
+            _tgAutostart = new ToggleSwitch { Text = "Start with Windows", Bounds = R(16, 40, 192, 26) };
+            _tgStartMinimized = new ToggleSwitch { Text = "Start minimized", Bounds = R(232, 40, 192, 26) };
+            _tgCloseToTray = new ToggleSwitch { Text = "Close to tray", Bounds = R(16, 68, 192, 26) };
+            _tgDarkMode = new ToggleSwitch { Text = "Dark mode", Bounds = R(232, 68, 192, 26) };
+            _settingsCard.Controls.AddRange(new Control[] { _tgAutostart, _tgStartMinimized, _tgCloseToTray, _tgDarkMode });
+            _toolTip.SetToolTip(_tgStartMinimized, "Start hidden in the tray");
+            _toolTip.SetToolTip(_tgCloseToTray, "The X button hides AutoRes to the tray instead of quitting.\nRight-click the tray icon to exit.");
+
+            Controls.AddRange(new Control[] { _title, _status, _desktopCard, _gameCard, _profilesCard, _settingsCard });
+
+            // Events
+            _btnUseCurrent.Click += (s, e) => _cbNormal.Text = ResolutionHelper.Format(ResolutionHelper.GetCurrentResolution());
+            _btnSaveNormal.Click += (s, e) => SaveNormalResolution();
+            _btnRefresh.Click += (s, e) => { RefreshProcessList(); Flash(StatusKind.Info, "Program list refreshed"); };
+            _btnBrowse.Click += (s, e) => BrowseForGame();
+            _btnSaveProfile.Click += (s, e) => SaveProfile();
+            _btnRemove.Click += (s, e) => RemoveSelectedProfile();
+            _profileList.SelectedIndexChanged += (s, e) => OnProfileSelected();
+            _profileList.KeyDown += (s, e) => { if (e.KeyCode == Keys.Delete) RemoveSelectedProfile(); };
+            _cbProcess.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SaveProfile(); } };
+            _cbGameRes.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SaveProfile(); } };
+            _cbNormal.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; SaveNormalResolution(); } };
+
+            _tgAutostart.CheckedChanged += (s, e) => OnAutostartChanged();
+            _tgStartMinimized.CheckedChanged += (s, e) => UpdateSetting(() => _settings.StartMinimized = _tgStartMinimized.Checked);
+            _tgCloseToTray.CheckedChanged += (s, e) => UpdateSetting(() => _settings.CloseToTray = _tgCloseToTray.Checked);
+            _tgDarkMode.CheckedChanged += (s, e) =>
+            {
+                UpdateSetting(() => _settings.DarkMode = _tgDarkMode.Checked);
+                if (!_loadingValues) ApplyTheme();
+            };
+
+            ResumeLayout(false);
+            PerformLayout();
+        }
+
+        private Label MakeFieldLabel(string text, int y)
+        {
+            return new Label { Text = text, AutoSize = false, Bounds = R(16, y, 72, 30), TextAlign = ContentAlignment.MiddleLeft };
+        }
+
+        /// <summary>Positions a combo box so it's vertically centred on a 30px button row.</summary>
+        private void Place(ComboBox combo, int x, int rowY, int width)
+        {
+            combo.Font = Font;
+            combo.Left = S(x);
+            combo.Width = S(width);
+            combo.Top = S(rowY) + (S(30) - combo.Height) / 2;
+        }
+
+        private void BuildTray()
+        {
+            _trayMenu = new ContextMenuStrip { ShowImageMargin = false, Font = new Font("Segoe UI", 9.75f) };
+
+            var openItem = new ToolStripMenuItem("Open AutoRes", null, (s, e) => ShowFromTray());
+            openItem.Font = new Font(_trayMenu.Font, FontStyle.Bold);
+            _trayStatusItem = new ToolStripMenuItem("Starting…") { Enabled = false };
+            var exitItem = new ToolStripMenuItem("Exit", null, (s, e) => ExitApplication());
+
+            _trayMenu.Items.AddRange(new ToolStripItem[]
+            {
+                openItem, new ToolStripSeparator(), _trayStatusItem, new ToolStripSeparator(), exitItem
+            });
+            foreach (ToolStripItem item in _trayMenu.Items)
+                if (item is ToolStripMenuItem) item.Padding = new Padding(S(4), S(3), S(4), S(3));
+
+            _tray = new NotifyIcon
+            {
+                Icon = LoadAppIcon(SystemInformation.SmallIconSize),
+                Text = "AutoRes",
+                ContextMenuStrip = _trayMenu,
+                Visible = true,
+            };
+            _tray.MouseClick += (s, e) =>
+            {
+                if (e.Button != MouseButtons.Left) return;
+                if (Visible && WindowState != FormWindowState.Minimized) HideToTray();
+                else ShowFromTray();
+            };
+            _tray.BalloonTipClicked += (s, e) => ShowFromTray();
+        }
+
+        private static Icon LoadAppIcon(Size size)
         {
             try
             {
-                _settings = AppSettings.Load();
-                chkAutostart.Checked = _settings.Autostart;
-                chkStartMinimized.Checked = _settings.StartMinimized;
-                ApplyDarkMode(_settings.DarkMode);
-                if (_settings.NormalResolution != null)
+                using (var stream = typeof(MainForm).Assembly.GetManifestResourceStream("AutoRes.app.ico"))
                 {
-                    lblNormal.Text = $"Normal: {_settings.NormalResolution.Width}x{_settings.NormalResolution.Height}";
+                    if (stream != null) return new Icon(stream, size);
                 }
-                RefreshGameProfiles();
-                RefreshProcesses();
-                lblStatus.Text = $"Monitoring {_settings.GameProfiles.Count} game(s)";
+            }
+            catch { /* fall through */ }
+            return SystemIcons.Application;
+        }
 
-                // If StartMinimized is checked, hide and minimize to tray
-                if (_settings.StartMinimized)
-                {
-                    this.WindowState = FormWindowState.Minimized;
-                    this.Hide();
-                    this.ShowInTaskbar = false;
-                }
+        #endregion
 
-                _processTimer.Start();
+        #region Theme
+
+        private void ApplyTheme()
+        {
+            _theme = _settings.DarkMode ? Theme.Dark : Theme.Light;
+            SuspendLayout();
+
+            BackColor = _theme.Background;
+            ForeColor = _theme.Text;
+            _title.BackColor = _theme.Background;
+            _title.ForeColor = _theme.Text;
+            _status.ApplyTheme(_theme);
+
+            foreach (var card in new[] { _desktopCard, _gameCard, _profilesCard, _settingsCard })
+            {
+                card.ApplyTheme(_theme);
+                foreach (Control c in card.Controls) ApplyTheme(c);
+            }
+
+            _trayMenu.Renderer = new MenuRenderer(_theme);
+
+            ResumeLayout();
+            if (IsHandleCreated) UpdateTitleBar();
+            Invalidate(true);
+        }
+
+        private void ApplyTheme(Control c)
+        {
+            if (c is FlatButton button) button.ApplyTheme(_theme);
+            else if (c is ToggleSwitch toggle) toggle.ApplyTheme(_theme);
+            else if (c is ThemedComboBox combo) combo.ApplyTheme(_theme);
+            else if (c is ProfileList list) list.ApplyTheme(_theme);
+            else if (c is Label label)
+            {
+                label.BackColor = _theme.Surface;
+                label.ForeColor = _theme.MutedText;
+            }
+        }
+
+        private void UpdateTitleBar()
+        {
+            NativeMethods.SetDarkTitleBar(Handle, _theme.IsDark);
+            if (Visible)
+            {
+                // Windows only repaints the caption after a non-client change; nudge it.
+                Width += 1;
+                Width -= 1;
+            }
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            NativeMethods.SetDarkTitleBar(Handle, _theme.IsDark);
+        }
+
+        #endregion
+
+        #region Values & actions
+
+        private void LoadValues()
+        {
+            _loadingValues = true;
+            try
+            {
+                var modes = ResolutionHelper.GetSupportedResolutions().Select(s => (object)ResolutionHelper.Format(s)).ToArray();
+                _cbNormal.Items.AddRange(modes);
+                _cbGameRes.Items.AddRange(modes);
+
+                var current = ResolutionHelper.GetCurrentResolution();
+                _cbNormal.Text = _settings.NormalResolution != null
+                    ? _settings.NormalResolution.ToString()
+                    : ResolutionHelper.Format(current);
+                _cbGameRes.Text = ResolutionHelper.Format(current);
+                UpdateNormalNote();
+
+                _tgAutostart.Checked = _settings.Autostart;
+                _tgStartMinimized.Checked = _settings.StartMinimized;
+                _tgCloseToTray.Checked = _settings.CloseToTray;
+                _tgDarkMode.Checked = _settings.DarkMode;
+
+                RefreshProcessList();
+                RefreshProfileList();
+            }
+            finally
+            {
+                _loadingValues = false;
+            }
+        }
+
+        private void UpdateNormalNote()
+        {
+            _desktopCard.Note = _settings.NormalResolution != null
+                ? "Saved: " + _settings.NormalResolution
+                : "Not saved yet";
+        }
+
+        private void UpdateSetting(Action change)
+        {
+            if (_loadingValues) return;
+            change();
+            TrySave();
+        }
+
+        private void TrySave()
+        {
+            try { _settings.Save(); }
+            catch (Exception ex) { Flash(StatusKind.Warning, "Couldn't save settings: " + ex.Message); }
+        }
+
+        private void OnAutostartChanged()
+        {
+            if (_loadingValues) return;
+            try
+            {
+                AutostartHelper.SetAutostart(_tgAutostart.Checked);
+                _settings.Autostart = _tgAutostart.Checked;
+                TrySave();
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Error loading settings: " + ex.Message);
-                lblStatus.Text = "Error: " + ex.Message;
+                _loadingValues = true;
+                _tgAutostart.Checked = !_tgAutostart.Checked;
+                _loadingValues = false;
+                Flash(StatusKind.Warning, "Couldn't change autostart: " + ex.Message);
             }
         }
 
-        private void RefreshGameProfiles()
+        private void SaveNormalResolution()
         {
-            lbGameProfiles.Items.Clear();
-            foreach (var profile in _settings.GameProfiles)
+            Size size;
+            if (!ResolutionHelper.TryParse(_cbNormal.Text, out size))
             {
-                lbGameProfiles.Items.Add($"{profile.GameName} ({profile.GameResolution.Width}x{profile.GameResolution.Height})");
+                Flash(StatusKind.Warning, "Enter a resolution like 1920 × 1080");
+                _cbNormal.Focus();
+                return;
+            }
+            _settings.NormalResolution = new ResolutionData(size);
+            _cbNormal.Text = ResolutionHelper.Format(size);
+            TrySave();
+            UpdateNormalNote();
+            Flash(StatusKind.Info, "Desktop resolution saved");
+        }
+
+        private static string CleanProcessName(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            var name = text.Trim().Trim('"');
+            name = Path.GetFileName(name);
+            if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                name = name.Substring(0, name.Length - 4);
+            return name.Trim();
+        }
+
+        private void SaveProfile()
+        {
+            var processName = CleanProcessName(_cbProcess.Text);
+            if (processName.Length == 0)
+            {
+                Flash(StatusKind.Warning, "Pick or type the game's process name first");
+                _cbProcess.Focus();
+                return;
+            }
+
+            Size size;
+            if (!ResolutionHelper.TryParse(_cbGameRes.Text, out size))
+            {
+                Flash(StatusKind.Warning, "Enter a resolution like 1728 × 1080");
+                _cbGameRes.Focus();
+                return;
+            }
+
+            var existing = _settings.GameProfiles.FirstOrDefault(p =>
+                string.Equals(p.ProcessName, processName, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                existing.GameResolution = new ResolutionData(size);
+            }
+            else
+            {
+                existing = new GameProfile(processName, new ResolutionData(size));
+                _settings.GameProfiles.Add(existing);
+            }
+
+            TrySave();
+            RefreshProfileList(existing);
+            _cbProcess.Text = processName;
+            _cbGameRes.Text = ResolutionHelper.Format(size);
+            Flash(StatusKind.Info, $"Saved {processName} at {ResolutionHelper.Format(size)}");
+            CheckGames();
+        }
+
+        private void RemoveSelectedProfile()
+        {
+            var profile = _profileList.SelectedItem as GameProfile;
+            if (profile == null) return;
+            _settings.GameProfiles.Remove(profile);
+            TrySave();
+            RefreshProfileList();
+            Flash(StatusKind.Info, $"Removed {profile.ProcessName}");
+            CheckGames();
+        }
+
+        private void OnProfileSelected()
+        {
+            var profile = _profileList.SelectedItem as GameProfile;
+            _btnRemove.Enabled = profile != null;
+            if (profile == null) return;
+            _cbProcess.Text = profile.ProcessName;
+            _cbGameRes.Text = profile.GameResolution.ToString();
+        }
+
+        private void BrowseForGame()
+        {
+            using (var dialog = new OpenFileDialog
+            {
+                Title = "Select the game's .exe",
+                Filter = "Programs (*.exe)|*.exe",
+                CheckFileExists = true,
+            })
+            {
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    _cbProcess.Text = CleanProcessName(dialog.FileName);
+                    _cbGameRes.Focus();
+                }
             }
         }
 
-        private static readonly string[] SystemProcesses = new[] 
-        { 
-            "svchost", "explorer", "dwm", "lsass", "services", "winlogon", "csrss", "wininit",
-            "conhost", "taskhostw", "SearchIndexer", "System", "Registry", "smss", "SearchProtocolHost",
-            "SettingSyncHost", "WmiPrvSE", "skydrive", "OneDrive", "TeamViewer", "CCleaner", "avast",
-            "avgnt", "Avira", "BitDefender", "McAfee", "Norton", "kaspersky", "nod32",
-            "WindowsUpdates", "TiWorker", "ntoskrnl", "Idle", "chrome", "edge", "firefox", "iexplore"
-        };
-
-        private bool IsSystemProcess(string processName)
+        private void RefreshProcessList()
         {
-            return SystemProcesses.Any(sp => processName.Equals(sp, StringComparison.OrdinalIgnoreCase));
-        }
-
-        private void RefreshProcesses()
-        {
-            var procList = new System.Collections.Generic.List<string>();
+            var text = _cbProcess.Text;
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var p in Process.GetProcesses())
             {
                 try
                 {
-                    var procName = p.ProcessName;
-                    if (!IsSystemProcess(procName))
-                    {
-                        var pid = p.Id;
-                        procList.Add($"{procName} ({pid})");
-                    }
+                    if (p.SessionId != 0 && !IgnoredProcesses.Contains(p.ProcessName))
+                        names.Add(p.ProcessName);
                 }
-                catch { /* ignore processes we can't access */ }
+                catch { /* process exited or access denied */ }
+                finally { p.Dispose(); }
             }
-            var procs = procList.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n).ToArray();
-            cbProcesses.Items.Clear();
-            cbProcesses.Items.AddRange(procs);
+
+            _cbProcess.BeginUpdate();
+            _cbProcess.Items.Clear();
+            _cbProcess.Items.AddRange(names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).Cast<object>().ToArray());
+            _cbProcess.EndUpdate();
+            _cbProcess.Text = text;
         }
 
-        private void btnRefresh_Click(object sender, EventArgs e)
+        private void RefreshProfileList(GameProfile select = null)
         {
-            RefreshProcesses();
+            _profileList.BeginUpdate();
+            _profileList.Items.Clear();
+            foreach (var profile in _settings.GameProfiles) _profileList.Items.Add(profile);
+            _profileList.EndUpdate();
+
+            if (select != null) _profileList.SelectedItem = select;
+            _btnRemove.Enabled = _profileList.SelectedItem != null;
+            _profileList.Invalidate();
         }
 
-        private void btnSetNormal_Click(object sender, EventArgs e)
+        #endregion
+
+        #region Game monitoring
+
+        private static HashSet<string> GetRunningProcessNames()
         {
-            try
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in Process.GetProcesses())
             {
-                int width = 0, height = 0;
-                bool hasTxtInput = !string.IsNullOrEmpty(txtWidth.Text) && !string.IsNullOrEmpty(txtHeight.Text);
+                try { names.Add(p.ProcessName); }
+                catch { /* exited */ }
+                finally { p.Dispose(); }
+            }
+            return names;
+        }
 
-                if (hasTxtInput && int.TryParse(txtWidth.Text, out width) && int.TryParse(txtHeight.Text, out height))
+        private void CheckGames()
+        {
+            var profiles = _settings.GameProfiles;
+            GameProfile running = null;
+            if (profiles.Count > 0)
+            {
+                var names = GetRunningProcessNames();
+                running = profiles.FirstOrDefault(p => names.Contains(p.ProcessName));
+            }
+
+            if (running != null)
+            {
+                var target = running.GameResolution.ToSize();
+                bool alreadyApplied = _activeProfile != null
+                    && string.Equals(_activeProfile.ProcessName, running.ProcessName, StringComparison.OrdinalIgnoreCase)
+                    && _activeResolution == target;
+
+                if (!alreadyApplied)
                 {
-                    _settings.NormalResolution = new ResolutionData { Width = width, Height = height };
-                    lblNormal.Text = $"Normal: {width}x{height}";
-                }
-                else
-                {
-                    var sz = ResolutionHelper.GetCurrentResolution();
-                    _settings.NormalResolution = new ResolutionData(sz);
-                    lblNormal.Text = $"Normal: {sz.Width}x{sz.Height}";
-                }
-                _settings.Save();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Error setting normal resolution: " + ex.Message);
-            }
-        }
+                    string key = running.ProcessName + "|" + target;
+                    if (key == _failedKey) return; // already failed for this game/resolution - don't retry every tick
 
-        private void btnSaveGame_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(cbProcesses.Text))
-                {
-                    MessageBox.Show("Please select a process first");
-                    return;
-                }
+                    if (_activeProfile == null)
+                        _resolutionBeforeGame = ResolutionHelper.GetCurrentResolution();
 
-                int width = 0, height = 0;
-                bool hasTxtInput = !string.IsNullOrEmpty(txtWidth.Text) && !string.IsNullOrEmpty(txtHeight.Text);
-
-                if (!hasTxtInput || !int.TryParse(txtWidth.Text, out width) || !int.TryParse(txtHeight.Text, out height))
-                {
-                    var sz = ResolutionHelper.GetCurrentResolution();
-                    width = sz.Width;
-                    height = sz.Height;
-                }
-
-                var selectedText = cbProcesses.Text;
-                int pidStart = selectedText.LastIndexOf('(');
-                string processName = pidStart > 0 ? selectedText.Substring(0, pidStart).Trim() : selectedText;
-
-                var gameRes = new ResolutionData { Width = width, Height = height };
-                var gameName = $"{processName} ({width}x{height})";
-                var profile = new GameProfile(gameName, processName, gameRes);
-
-                // Remove if already exists
-                var existing = _settings.GameProfiles.FirstOrDefault(p => p.ProcessName.Equals(processName, StringComparison.OrdinalIgnoreCase));
-                if (existing != null)
-                    _settings.GameProfiles.Remove(existing);
-
-                _settings.GameProfiles.Add(profile);
-                _settings.Save();
-                RefreshGameProfiles();
-                MessageBox.Show($"Game profile saved: {gameName}");
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Error saving game profile: " + ex.Message);
-            }
-        }
-
-        private void btnDeleteGame_Click(object sender, EventArgs e)
-        {
-            try
-            {
-                if (lbGameProfiles.SelectedIndex < 0)
-                {
-                    MessageBox.Show("Please select a game profile to delete");
-                    return;
-                }
-
-                _settings.GameProfiles.RemoveAt(lbGameProfiles.SelectedIndex);
-                _settings.Save();
-                RefreshGameProfiles();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Error deleting game profile: " + ex.Message);
-            }
-        }
-
-        private void btnToggleDark_Click(object sender, EventArgs e)
-        {
-            _settings.DarkMode = !_settings.DarkMode;
-            ApplyDarkMode(_settings.DarkMode);
-            _settings.Save();
-        }
-
-        private void ApplyDarkMode(bool dark)
-        {
-            if (dark)
-            {
-                this.BackColor = Color.FromArgb(45, 45, 48);
-                foreach (Control c in this.Controls)
-                {
-                    c.ForeColor = Color.White;
-                    if (c is Button btn)
+                    if (ResolutionHelper.SetResolution(target.Width, target.Height, persist: false))
                     {
-                        btn.BackColor = Color.FromArgb(63, 63, 70);
-                        btn.FlatStyle = FlatStyle.Flat;
-                        btn.FlatAppearance.BorderColor = Color.FromArgb(80, 80, 80);
+                        _activeProfile = running;
+                        _activeResolution = target;
+                        _failedKey = null;
                     }
-                    else if (c is TextBox)
+                    else
                     {
-                        c.BackColor = Color.FromArgb(45, 45, 48);
-                        c.ForeColor = Color.White;
-                    }
-                    else if (c is ListBox)
-                    {
-                        c.BackColor = Color.FromArgb(45, 45, 48);
-                        c.ForeColor = Color.White;
-                    }
-                    else if (c is ComboBox)
-                    {
-                        c.BackColor = Color.FromArgb(45, 45, 48);
-                        c.ForeColor = Color.White;
-                    }
-                    else if (c is Label)
-                    {
-                        c.BackColor = Color.FromArgb(45, 45, 48);
-                        c.ForeColor = Color.White;
-                    }
-                    else if (c is CheckBox chk)
-                    {
-                        chk.BackColor = Color.FromArgb(45, 45, 48);
-                        chk.ForeColor = Color.White;
+                        _failedKey = key;
+                        SetState(StatusKind.Warning, $"{ResolutionHelper.Format(target)} isn't supported by this display");
+                        return;
                     }
                 }
-            }
-            else
-            {
-                this.BackColor = SystemColors.Control;
-                foreach (Control c in this.Controls)
-                {
-                    c.ForeColor = SystemColors.ControlText;
-                    if (c is Button btn)
-                    {
-                        btn.BackColor = SystemColors.Control;
-                        btn.FlatStyle = FlatStyle.Standard;
-                    }
-                    else if (c is TextBox)
-                    {
-                        c.BackColor = SystemColors.Window;
-                        c.ForeColor = SystemColors.WindowText;
-                    }
-                    else if (c is ListBox)
-                    {
-                        c.BackColor = SystemColors.Window;
-                        c.ForeColor = SystemColors.WindowText;
-                    }
-                    else if (c is ComboBox)
-                    {
-                        c.BackColor = SystemColors.Window;
-                        c.ForeColor = SystemColors.WindowText;
-                    }
-                    else if (c is Label)
-                    {
-                        c.BackColor = SystemColors.Control;
-                        c.ForeColor = SystemColors.ControlText;
-                    }
-                    else if (c is CheckBox chk)
-                    {
-                        chk.BackColor = SystemColors.Control;
-                        chk.ForeColor = SystemColors.ControlText;
-                    }
-                }
-            }
-        }
 
-        private void chkAutostart_CheckedChanged(object sender, EventArgs e)
-        {
-            _settings.Autostart = chkAutostart.Checked;
-            try
-            {
-                AutostartHelper.SetAutostart("AutoRes", _settings.Autostart);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Failed to set autostart: " + ex.Message);
-                chkAutostart.Checked = !chkAutostart.Checked;
-            }
-            _settings.Save();
-        }
-
-        private void chkStartMinimized_CheckedChanged(object sender, EventArgs e)
-        {
-            _settings.StartMinimized = chkStartMinimized.Checked;
-            _settings.Save();
-        }
-
-        private void cbProcesses_SelectedIndexChanged(object sender, EventArgs e)
-        {
-            // No longer storing single selected process
-        }
-
-        private void ProcessTimer_Tick(object sender, EventArgs e)
-        {
-            if (_settings.GameProfiles.Count == 0) 
-            {
-                lblStatus.Text = "No games configured";
+                _profileList.RunningProcess = running.ProcessName;
+                SetState(StatusKind.Active, $"{running.ProcessName} running · {ResolutionHelper.Format(target)}");
                 return;
             }
 
-            // Monitor all game profiles
-            bool anyGameRunning = false;
-            string runningGame = "";
+            _failedKey = null;
+            if (_activeProfile != null) RestoreDesktopResolution();
+            _profileList.RunningProcess = null;
 
-            foreach (var profile in _settings.GameProfiles)
+            if (profiles.Count == 0)
+                SetState(StatusKind.Idle, "Add a game to get started");
+            else
+                SetState(StatusKind.Watching, profiles.Count == 1 ? "Watching 1 game" : $"Watching {profiles.Count} games");
+        }
+
+        private void RestoreDesktopResolution()
+        {
+            var target = _settings.NormalResolution?.ToSize() ?? _resolutionBeforeGame;
+            if (target.Width > 0 && target.Height > 0)
+                ResolutionHelper.SetResolution(target.Width, target.Height, persist: true);
+            _activeProfile = null;
+            _activeResolution = Size.Empty;
+        }
+
+        private void SetState(StatusKind kind, string text)
+        {
+            if (kind == _stateKind && text == _stateText) return;
+            _stateKind = kind;
+            _stateText = text;
+            RenderStatus();
+        }
+
+        /// <summary>Shows a short-lived message in the status pill, then falls back to the current state.</summary>
+        private void Flash(StatusKind kind, string text)
+        {
+            _status.SetStatus(kind, text);
+            _flashTimer.Stop();
+            _flashTimer.Start();
+        }
+
+        private void RenderStatus()
+        {
+            if (!_flashTimer.Enabled) _status.SetStatus(_stateKind, _stateText);
+
+            _trayStatusItem.Text = _stateText;
+            var tip = "AutoRes – " + _stateText;
+            _tray.Text = tip.Length > 63 ? tip.Substring(0, 62) + "…" : tip;
+        }
+
+        #endregion
+
+        #region Window & tray behaviour
+
+        protected override void SetVisibleCore(bool value)
+        {
+            // When starting minimized, create the window handle (so the tray, timers and
+            // single-instance message all work) but don't show the window.
+            if (!_allowVisible)
             {
-                try
-                {
-                    var processes = Process.GetProcessesByName(profile.ProcessName);
-                    var running = processes.Length > 0;
-
-                    if (running)
-                    {
-                        anyGameRunning = true;
-                        runningGame = profile.GameName;
-
-                        if (!_isGameActive && profile.GameResolution != null)
-                        {
-                            // A game started, switch to game resolution
-                            lblStatus.Text = $"Launching game: {profile.GameName}, changing to {profile.GameResolution.Width}x{profile.GameResolution.Height}...";
-                            this.Refresh();
-                            System.Threading.Thread.Sleep(100); // Give UI time to update
-
-                            bool success = ResolutionHelper.SetResolution(profile.GameResolution.Width, profile.GameResolution.Height);
-                            if (success)
-                            {
-                                _isGameActive = true;
-                                lblStatus.Text = $"Active: {profile.GameName} ({profile.GameResolution.Width}x{profile.GameResolution.Height})";
-                            }
-                            else
-                            {
-                                lblStatus.Text = $"Failed to change to {profile.GameResolution.Width}x{profile.GameResolution.Height}. Check if resolution is supported.";
-                            }
-                            return; // Only change once
-                        }
-                        else if (_isGameActive)
-                        {
-                            lblStatus.Text = $"Active: {runningGame}";
-                        }
-                    }
-                }
-                catch (Exception ex) 
-                { 
-                    lblStatus.Text = $"Error checking process: {ex.Message}";
-                }
+                value = false;
+                if (!IsHandleCreated) CreateHandle();
             }
+            base.SetVisibleCore(value);
+        }
 
-            // If no game is running but was active, restore normal resolution
-            if (!anyGameRunning && _isGameActive)
+        private void ShowFromTray()
+        {
+            _allowVisible = true;
+            Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Activate();
+            BringToFront();
+        }
+
+        private void HideToTray()
+        {
+            Hide();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (WindowState == FormWindowState.Minimized) HideToTray();
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == NativeMethods.WM_SHOW_AUTORES)
             {
-                if (_settings.NormalResolution != null)
-                {
-                    lblStatus.Text = "Game closed, restoring normal resolution...";
-                    this.Refresh();
-                    System.Threading.Thread.Sleep(100);
-
-                    ResolutionHelper.SetResolution(_settings.NormalResolution.Width, _settings.NormalResolution.Height);
-                    _isGameActive = false;
-                    lblStatus.Text = $"Normal: {_settings.NormalResolution.Width}x{_settings.NormalResolution.Height}";
-                }
+                ShowFromTray();
+                return;
             }
-            else if (!anyGameRunning && !_isGameActive)
-            {
-                lblStatus.Text = $"Monitoring {_settings.GameProfiles.Count} game(s)";
-            }
+            base.WndProc(ref m);
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            // restore if active
-            if (_isGameActive && _settings.NormalResolution != null)
+            if (!_exiting && e.CloseReason == CloseReason.UserClosing && _settings.CloseToTray)
             {
-                ResolutionHelper.SetResolution(_settings.NormalResolution.Width, _settings.NormalResolution.Height);
+                e.Cancel = true;
+                HideToTray();
+                if (!_settings.TrayHintShown)
+                {
+                    _settings.TrayHintShown = true;
+                    TrySave();
+                    _tray.ShowBalloonTip(4000, "AutoRes is still running",
+                        "It keeps watching for your games. Right-click the tray icon to exit.", ToolTipIcon.Info);
+                }
+                return;
             }
+
+            _pollTimer.Stop();
+            if (_activeProfile != null) RestoreDesktopResolution();
+            _tray.Visible = false;
             base.OnFormClosing(e);
         }
 
-        private void MainForm_Resize(object sender, EventArgs e)
+        private void ExitApplication()
         {
-            if (this.WindowState == FormWindowState.Minimized)
-            {
-                this.Hide();
-                this.ShowInTaskbar = false;
-            }
+            _exiting = true;
+            Close();
         }
 
-        private void notifyIcon_MouseClick(object sender, MouseEventArgs e)
+        protected override void Dispose(bool disposing)
         {
-            if (e.Button == MouseButtons.Left)
+            if (disposing)
             {
-                if (this.Visible)
-                {
-                    this.Hide();
-                    this.ShowInTaskbar = false;
-                }
-                else
-                {
-                    this.Show();
-                    this.ShowInTaskbar = true;
-                    this.WindowState = FormWindowState.Normal;
-                    this.Activate();
-                }
+                _pollTimer?.Dispose();
+                _flashTimer?.Dispose();
+                _tray?.Dispose();
+                _trayMenu?.Dispose();
+                _toolTip?.Dispose();
             }
+            base.Dispose(disposing);
         }
+
+        #endregion
     }
 }

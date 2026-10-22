@@ -2,10 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Windows.Forms;
 using System.Xml.Serialization;
+using Microsoft.Win32;
 
 namespace AutoRes
 {
+    // NOTE: class and property names are part of the settings.xml format - keep them stable
+    // so existing settings from older versions keep loading.
+
     [Serializable]
     public class ResolutionData
     {
@@ -13,8 +18,11 @@ namespace AutoRes
         public int Height { get; set; }
 
         public ResolutionData() { }
-        public ResolutionData(Size s) { Width = s.Width; Height = s.Height; }        
+        public ResolutionData(Size size) { Width = size.Width; Height = size.Height; }
+        public ResolutionData(int width, int height) { Width = width; Height = height; }
+
         public Size ToSize() => new Size(Width, Height);
+        public override string ToString() => ResolutionHelper.Format(Width, Height);
     }
 
     [Serializable]
@@ -25,55 +33,62 @@ namespace AutoRes
         public ResolutionData GameResolution { get; set; }
 
         public GameProfile() { }
-        public GameProfile(string name, string proc, ResolutionData res)
+        public GameProfile(string processName, ResolutionData resolution)
         {
-            GameName = name;
-            ProcessName = proc;
-            GameResolution = res;
+            GameName = processName;
+            ProcessName = processName;
+            GameResolution = resolution;
         }
+
+        public override string ToString() => $"{ProcessName} – {GameResolution}";
     }
 
     [Serializable]
     public class AppSettings
     {
         public ResolutionData NormalResolution { get; set; }
-        public List<GameProfile> GameProfiles { get; set; }
+        public List<GameProfile> GameProfiles { get; set; } = new List<GameProfile>();
         public bool Autostart { get; set; }
         public bool DarkMode { get; set; }
         public bool StartMinimized { get; set; }
+        public bool CloseToTray { get; set; } = true;
+        public bool TrayHintShown { get; set; }
 
-        public AppSettings()
+        private static string SettingsPath
         {
-            GameProfiles = new List<GameProfile>();
-        }
-
-        private static string GetSettingsPath()
-        {
-            var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AutoRes");
-            if (!Directory.Exists(folder)) Directory.CreateDirectory(folder);
-            return Path.Combine(folder, "settings.xml");
+            get
+            {
+                var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AutoRes");
+                Directory.CreateDirectory(folder);
+                return Path.Combine(folder, "settings.xml");
+            }
         }
 
         public void Save()
         {
-            var path = GetSettingsPath();
-            using (var fs = new FileStream(path, FileMode.Create))
+            var path = SettingsPath;
+            var temp = path + ".tmp";
+            using (var fs = new FileStream(temp, FileMode.Create))
             {
-                var ser = new XmlSerializer(typeof(AppSettings));
-                ser.Serialize(fs, this);
+                new XmlSerializer(typeof(AppSettings)).Serialize(fs, this);
             }
+            // Write to a temp file first so a crash mid-save can't leave a corrupt settings file.
+            if (File.Exists(path)) File.Delete(path);
+            File.Move(temp, path);
         }
 
         public static AppSettings Load()
         {
-            var path = GetSettingsPath();
-            if (!File.Exists(path)) return new AppSettings();
             try
             {
-                using (var fs = new FileStream(path, FileMode.Open))
+                var path = SettingsPath;
+                if (!File.Exists(path)) return new AppSettings();
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read))
                 {
-                    var ser = new XmlSerializer(typeof(AppSettings));
-                    return (AppSettings)ser.Deserialize(fs);
+                    var settings = (AppSettings)new XmlSerializer(typeof(AppSettings)).Deserialize(fs);
+                    settings.GameProfiles = settings.GameProfiles ?? new List<GameProfile>();
+                    settings.GameProfiles.RemoveAll(p => string.IsNullOrWhiteSpace(p?.ProcessName) || p.GameResolution == null);
+                    return settings;
                 }
             }
             catch
@@ -85,21 +100,18 @@ namespace AutoRes
 
     public static class AutostartHelper
     {
-        public static void SetAutostart(string appName, bool enable)
+        private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        private const string ValueName = "AutoRes";
+
+        public static void SetAutostart(bool enable)
         {
-            var runKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-            if (enable)
+            using (var key = Registry.CurrentUser.CreateSubKey(RunKey))
             {
-                var exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
-                Microsoft.Win32.Registry.SetValue(runKey, appName, "\"" + exe + "\"");
-            }
-            else
-            {
-                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey("Software\\Microsoft\\Windows\\CurrentVersion\\Run", true))
-                {
-                    if (key == null) return;
-                    key.DeleteValue(appName, false);
-                }
+                if (key == null) return;
+                if (enable)
+                    key.SetValue(ValueName, "\"" + Application.ExecutablePath + "\"");
+                else
+                    key.DeleteValue(ValueName, false);
             }
         }
     }

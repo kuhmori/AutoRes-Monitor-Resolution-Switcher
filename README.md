@@ -22,10 +22,11 @@
 - Toggle with a single click
 - Settings saved automatically
 
-⏫ **Auto-Start**
+⏫ **Auto-Start & Tray**
 - Option to start with Windows automatically
-- Runs in system tray (minimize to tray)
-- Restore by clicking tray icon
+- Runs in the system tray (minimize or close to tray)
+- Left-click the tray icon to show/hide, right-click for **Open** / **Exit**
+- Only one copy runs at a time: launching it again just brings the window up
 
 🔇 **Start Minimized**
 - Option to start the app minimized to system tray
@@ -51,11 +52,10 @@
 - .NET Framework 4.8 Developer Pack
 
 ```bash
-git clone https://github.com/kuhmori/AutoRes.git
-cd AutoRes
+git clone https://github.com/kuhmori/AutoRes-Monitor-Resolution-Switcher.git
+cd AutoRes-Monitor-Resolution-Switcher\AutoRes
 dotnet build -c Release
-cd AutoRes\bin\Release\net48
-AutoRes.exe
+bin\Release\AutoRes.exe
 ```
 
 ## Requirements
@@ -68,19 +68,17 @@ AutoRes.exe
 
 ### Setting Up Your First Profile
 
-1. **Set Normal Resolution:**
-   - Click **"Set Normal"** button
-   - This saves your default monitor resolution
+1. **Desktop resolution:**
+   - Pick your normal resolution (or click **Use current**) and click **Save**
+   - AutoRes switches back to this when a game closes
 
-2. **Add a Game Profile:**
-   - Select a game/application from the dropdown (e.g., `notepad`)
-   - Enter desired resolution (width x height) in the text fields
-   - Or leave blank to use current resolution
-   - Click **"Save Game"** button
-   - Profile appears in the list below
+2. **Add a game:**
+   - Pick the game from the **Program** list (start it first, then click ↻), type its process name, or use **Browse…** to select its `.exe`
+   - Pick a **Resolution** from the list of modes your monitor supports (or type one, e.g. `1728x1080`)
+   - Click **Save game** — saving again for the same program updates it
 
-3. **Monitor Your Games:**
-   - Status shows "Monitoring X game(s)"
+3. **Monitor your games:**
+   - The status pill shows "Watching X games"
    - Launch your game
    - Resolution automatically changes to your saved profile
    - When game closes, resolution restores to normal
@@ -88,9 +86,9 @@ AutoRes.exe
 ### Managing Profiles
 
 - **View Profiles:** List shows all saved game profiles with their resolutions
-- **Delete Profile:** Select a profile and click **"Delete"**
-- **Dark Mode:** Click **"Dark Mode"** to toggle
-- **Auto-Start:** Check **"Auto-Start"** to run at Windows startup
+- **Edit Profile:** Click a profile to load it into the editor, change it, then **Save game**
+- **Delete Profile:** Select a profile and click **Remove** (or press Delete)
+- **Settings:** Start with Windows, Start minimized, Close to tray, Dark mode
 
 ## How It Works
 
@@ -136,9 +134,9 @@ C:\Users\{YourUsername}\AppData\Roaming\AutoRes\settings.xml
 
 No manual configuration needed! Everything is managed through the GUI:
 
-- **Normal Resolution:** Set via "Set Normal" button
-- **Game Profiles:** Add/delete via "Save Game" and "Delete" buttons  
-- **Preferences:** Dark Mode and Auto-Start settings are saved automatically
+- **Normal Resolution:** Set in the "Desktop resolution" card
+- **Game Profiles:** Add/update with "Save game", delete with "Remove"
+- **Preferences:** The toggles in the "Settings" card are saved automatically
 
 Settings are automatically persisted to `%APPDATA%\AutoRes\settings.xml` (you never need to manually edit this file).
 
@@ -162,12 +160,14 @@ This keeps the process list focused on actual games and applications.
 
 ```
 AutoRes/
-├── Program.cs                 # Application entry point
-├── MainForm.cs               # Main UI and monitoring logic
-├── MainForm.Designer.cs      # UI controls layout
-├── AppSettings.cs            # Settings persistence
-├── ResolutionHelper.cs       # Windows Display API wrapper
-└── AutostartHelper.cs        # Windows Registry autostart
+├── Program.cs            # Entry point, single-instance handling
+├── MainForm.cs           # Window layout, tray menu and game monitoring
+├── Controls.cs           # Themed controls (cards, toggles, status pill, profile list)
+├── Theme.cs              # Light/dark palettes and tray menu renderer
+├── AppSettings.cs        # Settings persistence + Windows autostart
+├── ResolutionHelper.cs   # Windows display API wrapper
+├── NativeMethods.cs      # Dark title bar, native control themes
+└── build.bat             # One-click build into ..\Release
 ```
 
 **Key Technologies:**
@@ -202,6 +202,14 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Changelog
 
+### v1.1.0
+- Redesigned interface (cards, toggle switches, status indicator, better dark mode incl. title bar)
+- Tray right-click menu with Open / Exit, optional close-to-tray
+- Resolution dropdown lists the modes your monitor supports
+- Browse for a game's .exe, click a profile to edit it
+- Single-instance, icon embedded in the exe, sharp on high-DPI screens
+- Game resolution is applied temporarily, so a crash or reboot can't leave you stuck on it
+
 ### v1.0.0 (2024)
 - Initial release
 - Game profile management
@@ -213,6 +221,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-**Created with the help of Claude**
+**Created with the help of Gemini and Claude**
 
 Need help? Check the [Issues](https://github.com/kuhmori/AutoRes/issues) page or create a new issue!
