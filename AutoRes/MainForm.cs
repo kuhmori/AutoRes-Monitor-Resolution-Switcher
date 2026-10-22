@@ -649,6 +649,20 @@ namespace AutoRes
             base.OnShown(e);
             // Don't drop the cursor into the first box (which would also select its text).
             ActiveControl = null;
+            ClearComboSelections();
+        }
+
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            ClearComboSelections();
+        }
+
+        private void ClearComboSelections()
+        {
+            _cbNormal.ClearSelection();
+            _cbProcess.ClearSelection();
+            _cbGameRes.ClearSelection();
         }
 
         private void HideToTray()

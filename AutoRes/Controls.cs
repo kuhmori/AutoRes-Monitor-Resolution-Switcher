@@ -289,35 +289,26 @@ namespace AutoRes
             base.OnHandleCreated(e);
             ApplyNativeTheme();
             if (_cue != null) NativeMethods.SetCueBanner(Handle, _cue);
-            ClearSelectionIfUnfocused();
+            ClearSelection();
         }
 
-        // Windows highlights the whole text whenever it's set from code (e.g. picking a list item),
-        // which looks like a stray selection when the box isn't being edited. Clear it.
-        protected override void OnTextChanged(EventArgs e)
-        {
-            base.OnTextChanged(e);
-            ClearSelectionIfUnfocused();
-        }
+        // Windows highlights the whole text whenever it's set from code, an item is picked, the box
+        // gets focus or is resized. That reads as a stray blue selection, so put the caret at the end
+        // instead. Selections the user makes with the mouse or Shift+arrows are left alone.
+        protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); ClearSelection(); }
+        protected override void OnSelectedIndexChanged(EventArgs e) { base.OnSelectedIndexChanged(e); ClearSelection(); }
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); ClearSelection(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); ClearSelection(); }
+        protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); ClearSelection(); }
+        protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); ClearSelection(); }
 
-        protected override void OnSelectedIndexChanged(EventArgs e)
+        public void ClearSelection()
         {
-            base.OnSelectedIndexChanged(e);
-            ClearSelectionIfUnfocused();
-        }
-
-        protected override void OnLostFocus(EventArgs e)
-        {
-            base.OnLostFocus(e);
-            ClearSelectionIfUnfocused();
-        }
-
-        private void ClearSelectionIfUnfocused()
-        {
-            if (!IsHandleCreated || Focused) return;
+            if (!IsHandleCreated || IsDisposed) return;
             BeginInvoke((Action)(() =>
             {
-                if (!IsDisposed && !Focused && DropDownStyle != ComboBoxStyle.DropDownList) SelectionLength = 0;
+                if (IsDisposed || DroppedDown || SelectionLength == 0) return;
+                Select(Text.Length, 0);
             }));
         }
 
