@@ -289,6 +289,36 @@ namespace AutoRes
             base.OnHandleCreated(e);
             ApplyNativeTheme();
             if (_cue != null) NativeMethods.SetCueBanner(Handle, _cue);
+            ClearSelectionIfUnfocused();
+        }
+
+        // Windows highlights the whole text whenever it's set from code (e.g. picking a list item),
+        // which looks like a stray selection when the box isn't being edited. Clear it.
+        protected override void OnTextChanged(EventArgs e)
+        {
+            base.OnTextChanged(e);
+            ClearSelectionIfUnfocused();
+        }
+
+        protected override void OnSelectedIndexChanged(EventArgs e)
+        {
+            base.OnSelectedIndexChanged(e);
+            ClearSelectionIfUnfocused();
+        }
+
+        protected override void OnLostFocus(EventArgs e)
+        {
+            base.OnLostFocus(e);
+            ClearSelectionIfUnfocused();
+        }
+
+        private void ClearSelectionIfUnfocused()
+        {
+            if (!IsHandleCreated || Focused) return;
+            BeginInvoke((Action)(() =>
+            {
+                if (!IsDisposed && !Focused && DropDownStyle != ComboBoxStyle.DropDownList) SelectionLength = 0;
+            }));
         }
 
         private void ApplyNativeTheme()

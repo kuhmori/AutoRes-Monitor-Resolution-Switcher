@@ -644,6 +644,13 @@ namespace AutoRes
             BringToFront();
         }
 
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            // Don't drop the cursor into the first box (which would also select its text).
+            ActiveControl = null;
+        }
+
         private void HideToTray()
         {
             Hide();

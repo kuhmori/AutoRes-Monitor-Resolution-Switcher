@@ -4,7 +4,7 @@
 
 Handy for stretched resolutions (e.g. 1728×1080 in Overwatch, 1440×1080 in Valorant) without touching Windows display settings every time.
 
-![AutoRes in light and dark mode](autores-preview.png)
+![AutoRes](autores-preview.png)
 
 ## Features
 
