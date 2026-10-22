@@ -10,7 +10,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Product>AutoRes</Product>
     <Description>Switches the monitor resolution while a game is running.</Description>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
 

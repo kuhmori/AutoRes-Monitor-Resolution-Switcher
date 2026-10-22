@@ -71,7 +71,7 @@ AutoRes/
 
 ## Changelog
 
-**v1.1.0**
+**v1.2.0**
 - Redesigned interface with full dark mode
 - Tray right-click menu (Open / Exit) and close-to-tray
 - Supported-resolution dropdowns, Browse for `.exe`, click a profile to edit it
